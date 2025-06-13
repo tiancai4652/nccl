@@ -380,6 +380,10 @@ ncclResult_t ncclTopoPostset(struct ncclComm* comm, int* firstRanks, int* treePa
   int nChannels = comm->nChannels;
   int minHeadNum = INT_MAX;
   int shared = parent && parent->nvlsSupport  && parent->shareResources;
+
+  // 提前声明字符串变量
+  std::string ringRecvStr, ringSendStr, ringPrevStr, ringNextStr;
+
   NCCLCHECK(ncclCalloc(&ringRecv, nNodes*MAXCHANNELS));
   NCCLCHECKGOTO(ncclCalloc(&ringSend, nNodes*MAXCHANNELS), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&ringPrev, nranks*MAXCHANNELS), ret, fail);
@@ -430,6 +434,61 @@ ncclResult_t ncclTopoPostset(struct ncclComm* comm, int* firstRanks, int* treePa
       int r = firstRanks[n];
       nvlsHeads[c * nNodes + n] = allTopoRanks[r]->nvlsHeads[c];
     }
+  }
+
+  // 新增打印逻辑
+  if (comm->rank == 0) {
+    INFO(NCCL_GRAPH, "===== Debugging connectRings parameters =====");
+    
+    // 打印ringRecv数组
+    ringRecvStr = "ringRecv: {";
+    for (int c = 0; c < nChannels; c++) {
+      for (int n = 0; n < nNodes; n++) {
+        int idx = c * nNodes + n;
+        ringRecvStr += std::to_string(ringRecv[idx]);
+        if (c < nChannels-1 || n < nNodes-1) ringRecvStr += ", ";
+      }
+    }
+    ringRecvStr += "}";
+    INFO(NCCL_GRAPH, "%s", ringRecvStr.c_str());
+
+    // 打印ringSend数组
+    ringSendStr = "ringSend: {";
+    for (int c = 0; c < nChannels; c++) {
+      for (int n = 0; n < nNodes; n++) {
+        int idx = c * nNodes + n;
+        ringSendStr += std::to_string(ringSend[idx]);
+        if (c < nChannels-1 || n < nNodes-1) ringSendStr += ", ";
+      }
+    }
+    ringSendStr += "}";
+    INFO(NCCL_GRAPH, "%s", ringSendStr.c_str());
+
+    // 打印ringPrev数组
+    ringPrevStr = "ringPrev: {";
+    for (int c = 0; c < nChannels; c++) {
+      for (int r = 0; r < nranks; r++) {
+        int idx = c * nranks + r;
+        ringPrevStr += std::to_string(ringPrev[idx]);
+        if (c < nChannels-1 || r < nranks-1) ringPrevStr += ", ";
+      }
+    }
+    ringPrevStr += "}";
+    INFO(NCCL_GRAPH, "%s", ringPrevStr.c_str());
+
+    // 打印ringNext数组
+    ringNextStr = "ringNext: {";
+    for (int c = 0; c < nChannels; c++) {
+      for (int r = 0; r < nranks; r++) {
+        int idx = c * nranks + r;
+        ringNextStr += std::to_string(ringNext[idx]);
+        if (c < nChannels-1 || r < nranks-1) ringNextStr += ", ";
+      }
+    }
+    ringNextStr += "}";
+    INFO(NCCL_GRAPH, "%s", ringNextStr.c_str());
+
+    INFO(NCCL_GRAPH, "===== End of connectRings parameters =====");
   }
 
   // Connect rings and trees. This should also duplicate the channels.
