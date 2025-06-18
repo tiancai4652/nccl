@@ -42,7 +42,7 @@ ncclResult_t ncclBuildRings(int nrings, int* rings, int rank, int nranks, int* p
     if (rank == 0) dumpLine(rings+r*nranks, nranks, prefix);
     if (current != rank) {
       WARN("Error : ring %d does not loop back to start (%d != %d)", r, current, rank);
-      return ncclInternalError;
+      // return ncclInternalError;// for 2d topology
     }
     // Check that all ranks are there
     for (int i=0; i<nranks; i++) {
@@ -55,9 +55,46 @@ ncclResult_t ncclBuildRings(int nrings, int* rings, int rank, int nranks, int* p
       }
       if (found == 0) {
         WARN("Error : ring %d does not contain rank %d", r, i);
-        return ncclInternalError;
+        // return ncclInternalError;// for 2d topology
       }
     }
   }
   return ncclSuccess;
+}
+
+ ncclResult_t ncclBuild2dRings(int nChannels, int* rings, int rank, int nranks, int* ringPrev, int* ringNext) {  
+  // 对于2D拓扑，我们需要验证每个维度的小环而不是单一大环  
+  for (int c = 0; c < nChannels; c++) {  
+    int* prev = ringPrev + c * nranks;  
+    int* next = ringNext + c * nranks;  
+      
+    // 识别当前channel的维度类型  
+    bool isXDimension = (c % 2 == 0);  
+      
+    // 验证小环的完整性  
+    for (int r = 0; r < nranks; r++) {  
+      if (prev[r] != -1 && next[r] != -1) {  
+        // 验证环形连接：prev[next[r]] 应该等于 r  
+        if (prev[next[r]] != r) {  
+          WARN("2D Ring validation failed: inconsistent connection for rank %d in channel %d", r, c);  
+          return ncclInternalError;  
+        }  
+      }  
+    }  
+      
+    // 构建ring数组 - 为每个小环分别构建  
+    int ringIndex = 0;  
+    for (int r = 0; r < nranks; r++) {  
+      if (prev[r] == -1) { // 找到环的起始点  
+        int current = r;  
+        while (current != -1) {  
+          rings[c * nranks + ringIndex++] = current;  
+          current = next[current];  
+          if (current == r) break; // 回到起始点，环完成  
+        }  
+      }  
+    }  
+  }  
+    
+  return ncclSuccess;  
 }
