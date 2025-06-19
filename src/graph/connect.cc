@@ -465,8 +465,8 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
 
   NCCLCHECK(ncclCalloc(&ringRecv, nNodes * MAXCHANNELS));
   NCCLCHECKGOTO(ncclCalloc(&ringSend, nNodes * MAXCHANNELS), ret, fail);
-  NCCLCHECKGOTO(ncclCalloc(&ringPrev, nranks * MAXCHANNELS), ret, fail);
-  NCCLCHECKGOTO(ncclCalloc(&ringNext, nranks * MAXCHANNELS), ret, fail);
+  NCCLCHECKGOTO(ncclCalloc(&ringPrev, nranks * MAXCHANNELS * 2), ret, fail);
+  NCCLCHECKGOTO(ncclCalloc(&ringNext, nranks * MAXCHANNELS * 2), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&treeToParent, nNodes * MAXCHANNELS), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&treeToChild0, nNodes * MAXCHANNELS), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&treeToChild1, nNodes * MAXCHANNELS), ret, fail);
@@ -525,91 +525,11 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
     }
   }
 
-  {
-    // 新增打印逻辑
-    if (comm->rank == 0)
-    {
-      INFO(NCCL_GRAPH, "===== Debugging connectRings parameters =====");
-      INFO(NCCL_GRAPH, "nChannels: %d, nranks: %d, nNodes: %d", nChannels, nranks, nNodes);
-
-      // 打印ringRecv数组
-      ringRecvStr = "ringRecv: {";
-      for (int c = 0; c < nChannels; c++)
-      {
-        for (int n = 0; n < nNodes; n++)
-        {
-          int idx = c * nNodes + n;
-          ringRecvStr += std::to_string(ringRecv[idx]);
-          if (c < nChannels - 1 || n < nNodes - 1)
-            ringRecvStr += ", ";
-        }
-      }
-      ringRecvStr += "}";
-      INFO(NCCL_GRAPH, "%s", ringRecvStr.c_str());
-
-      // 打印ringSend数组
-      ringSendStr = "ringSend: {";
-      for (int c = 0; c < nChannels; c++)
-      {
-        for (int n = 0; n < nNodes; n++)
-        {
-          int idx = c * nNodes + n;
-          ringSendStr += std::to_string(ringSend[idx]);
-          if (c < nChannels - 1 || n < nNodes - 1)
-            ringSendStr += ", ";
-        }
-      }
-      ringSendStr += "}";
-      INFO(NCCL_GRAPH, "%s", ringSendStr.c_str());
-
-      // 打印ringPrev数组
-      ringPrevStr = "ringPrev: {";
-      for (int c = 0; c < nChannels; c++)
-      {
-        ringPrevStr += "[";
-        for (int r = 0; r < nranks; r++)
-        {
-          int idx = c * nranks + r;
-          ringPrevStr += std::to_string(ringPrev[idx]);
-          if (r < nranks - 1)
-            ringPrevStr += ", ";
-        }
-        ringPrevStr += "]";
-        if (c < nChannels - 1)
-          ringPrevStr += ", ";
-      }
-      ringPrevStr += "}";
-      INFO(NCCL_GRAPH, "%s", ringPrevStr.c_str());
-
-      // 打印ringNext数组
-      ringNextStr = "ringNext: {";
-      for (int c = 0; c < nChannels; c++)
-      {
-        ringNextStr += "[";
-        for (int r = 0; r < nranks; r++)
-        {
-          int idx = c * nranks + r;
-          ringNextStr += std::to_string(ringNext[idx]);
-          if (r < nranks - 1)
-            ringNextStr += ", ";
-        }
-        ringNextStr += "]";
-        if (c < nChannels - 1)
-          ringNextStr += ", ";
-      }
-      ringNextStr += "}";
-      INFO(NCCL_GRAPH, "%s", ringNextStr.c_str());
-
-      INFO(NCCL_GRAPH, "===== End of connectRings parameters =====");
-    }
-  }
   //************change ringPrev and ringNext and ..**************** */
   if (is_2d_topology)
   {
     if (nChannels < 2 && is_2d_topology)
     {
-      // 扩展数组以支持更多channel
-      // 这里需要重新分配或确保数组足够大
       nChannels = 2;
       comm->nChannels = nChannels;
     }
@@ -620,7 +540,7 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
     if (nranks == 4 && nNodes == 1)
     {
 
-      for (int i = 0; i < nranks * MAXCHANNELS; ++i)
+      for (int i = 0; i < nranks * MAXCHANNELS * 2; ++i)
       {
         ringPrev[i] = -1;
         ringNext[i] = -1;
@@ -628,14 +548,23 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
 
       for (int i = 0; i < nChannels; i++)
       {
-        ringPrev[0 + i * 4] = 3;
-        ringPrev[1 + i * 4] = 2;
-        ringPrev[2 + i * 4] = 1;
-        ringPrev[3 + i * 4] = 0;
-        ringNext[0 + i * 4] = 3;
-        ringNext[1 + i * 4] = 2;
-        ringNext[2 + i * 4] = 1;
-        ringNext[3 + i * 4] = 0;
+        ringPrev[0] = 3;
+        ringPrev[1] = 2;
+        ringPrev[2] = 1;
+        ringPrev[3] = 0;
+        ringNext[0] = 3;
+        ringNext[1] = 2;
+        ringNext[2] = 1;
+        ringNext[3] = 0;
+
+        ringPrev[4] = 1;
+        ringPrev[5] = 0;
+        ringPrev[6] = 3;
+        ringPrev[7] = 2;
+        ringNext[4] = 1;
+        ringNext[5] = 0;
+        ringNext[6] = 3;
+        ringNext[7] = 2;
       }
 
       // // 在这里添加2D拓扑重新计算逻辑
@@ -663,85 +592,6 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
       // }
     }
   }
-  //************print**************** */
-  {
-    // 新增打印逻辑
-    if (comm->rank == 0)
-    {
-      INFO(NCCL_GRAPH, "===== Debugging connectRings parameters =====");
-      INFO(NCCL_GRAPH, "nChannels: %d, nranks: %d, nNodes: %d", nChannels, nranks, nNodes);
-
-      // 打印ringRecv数组
-      ringRecvStr = "ringRecv: {";
-      for (int c = 0; c < nChannels; c++)
-      {
-        for (int n = 0; n < nNodes; n++)
-        {
-          int idx = c * nNodes + n;
-          ringRecvStr += std::to_string(ringRecv[idx]);
-          if (c < nChannels - 1 || n < nNodes - 1)
-            ringRecvStr += ", ";
-        }
-      }
-      ringRecvStr += "}";
-      INFO(NCCL_GRAPH, "%s", ringRecvStr.c_str());
-
-      // 打印ringSend数组
-      ringSendStr = "ringSend: {";
-      for (int c = 0; c < nChannels; c++)
-      {
-        for (int n = 0; n < nNodes; n++)
-        {
-          int idx = c * nNodes + n;
-          ringSendStr += std::to_string(ringSend[idx]);
-          if (c < nChannels - 1 || n < nNodes - 1)
-            ringSendStr += ", ";
-        }
-      }
-      ringSendStr += "}";
-      INFO(NCCL_GRAPH, "%s", ringSendStr.c_str());
-
-      // 打印ringPrev数组
-      ringPrevStr = "ringPrev: {";
-      for (int c = 0; c < nChannels; c++)
-      {
-        ringPrevStr += "[";
-        for (int r = 0; r < nranks; r++)
-        {
-          int idx = c * nranks + r;
-          ringPrevStr += std::to_string(ringPrev[idx]);
-          if (r < nranks - 1)
-            ringPrevStr += ", ";
-        }
-        ringPrevStr += "]";
-        if (c < nChannels - 1)
-          ringPrevStr += ", ";
-      }
-      ringPrevStr += "}";
-      INFO(NCCL_GRAPH, "%s", ringPrevStr.c_str());
-
-      // 打印ringNext数组
-      ringNextStr = "ringNext: {";
-      for (int c = 0; c < nChannels; c++)
-      {
-        ringNextStr += "[";
-        for (int r = 0; r < nranks; r++)
-        {
-          int idx = c * nranks + r;
-          ringNextStr += std::to_string(ringNext[idx]);
-          if (r < nranks - 1)
-            ringNextStr += ", ";
-        }
-        ringNextStr += "]";
-        if (c < nChannels - 1)
-          ringNextStr += ", ";
-      }
-      ringNextStr += "}";
-      INFO(NCCL_GRAPH, "%s", ringNextStr.c_str());
-
-      INFO(NCCL_GRAPH, "===== End of connectRings parameters =====");
-    }
-  }
 
   // Connect rings and trees. This should also duplicate the channels.
   if (!is_2d_topology)
@@ -761,6 +611,31 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
   memcpy(ringNext + nChannels * nranks, ringNext, nChannels * nranks * sizeof(int));
 
   // Set ring prev/next for my rank
+  // for 2d topology, we need to set the ring prev/next for each channel
+
+  // if (is_2d_topology)
+  // {
+  //   for (int c = 0; c < nChannels; c++)
+  //   {
+  //     struct ncclChannel *channel0 = comm->channels + c;
+  //     struct ncclChannel *channel1 = channel0 + nChannels;
+  //     channel0->ring.prev = ringPrev[c * nranks + comm->rank];
+  //     channel0->ring.next = ringNext[c * nranks + comm->rank];
+  //     channel1->ring.prev = ringPrev[(c + 1) * nranks + comm->rank];
+  //     channel1->ring.next = ringNext[(c + 1) * nranks + comm->rank];
+  //   }
+  // }
+  // else
+  // {
+  //   for (int c = 0; c < nChannels; c++)
+  //   {
+  //     struct ncclChannel *channel0 = comm->channels + c;
+  //     struct ncclChannel *channel1 = channel0 + nChannels;
+  //     channel0->ring.prev = channel1->ring.prev = ringPrev[c * nranks + comm->rank];
+  //     channel0->ring.next = channel1->ring.next = ringNext[c * nranks + comm->rank];
+  //   }
+  // }
+
   for (int c = 0; c < nChannels; c++)
   {
     struct ncclChannel *channel0 = comm->channels + c;
@@ -836,6 +711,14 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
   if (!is_2d_topology)
   {
     NCCLCHECKGOTO(ncclBuildRings(nChannels, rings, comm->rank, comm->nRanks, ringPrev, ringNext), ret, fail);
+  }
+
+  for (int c = 0; c < comm->nChannels; c++)
+  {
+    struct ncclChannel *channel = comm->channels + c;
+    int dimension = c % 2; // 0 for X, 1 for Y
+    channel->ring.prev = ringPrev[dimension * nranks + comm->rank];
+    channel->ring.next = ringNext[dimension * nranks + comm->rank];
   }
 
 exit:
