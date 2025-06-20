@@ -14,8 +14,22 @@ namespace {
     ncclRing *ring = &ncclShmem.channel.ring;
     const int *ringRanks = ring->userRanks;
     const int nranks = ncclShmem.comm.nRanks;
+
+    // // 添加2D拓扑调试信息  
+    // if (tid == 0) {  
+    //   printf("[DEBUG] Rank %d, Channel %d, Dimension %d (0=X,1=Y), ringRanks[0]=%d, ringRanks[1]=%d\n",   
+    //         ncclShmem.comm.rank, ncclShmem.channelId, ncclShmem.channelId % 2, ringRanks[0], ringRanks[1]);  
+    // }  
+  
     ssize_t count, partOffset, partCount, chunkCount;
     ncclCollCbdPart(work, ncclShmem.channelId, Proto::Id, sizeof(T), &count, &partOffset, &partCount, &chunkCount);
+
+    // // 添加数据分区调试信息  
+    // if (tid == 0) {  
+    //   printf("[DEBUG] Rank %d, Channel %d: count=%ld, partOffset=%ld, partCount=%ld, chunkCount=%ld\n",  
+    //         ncclShmem.comm.rank, ncclShmem.channelId, count, partOffset, partCount, chunkCount);  
+    // }  
+
     ssize_t offset;
     ssize_t dataOffset;
     int nelem;
@@ -81,7 +95,88 @@ namespace {
     // __syncthread().
     if (isNetOffload) barrier_sync(14, nthreads);
   }
+
+// template<typename T, typename RedOp, typename Proto, bool isNetOffload = false>  
+// __device__ __forceinline__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {  
+//   ncclRing *ring = &ncclShmem.channel.ring;  
+//   const int *ringRanks = ring->userRanks;  
+//   const int nranks = ncclShmem.comm.nRanks;  
+//   const int rank = ncclShmem.comm.rank;  
+//   const int channelId = ncclShmem.channelId;  
+    
+//   // 确定当前维度和网格大小  
+//   int dimension = channelId % 2; // 0=X维度, 1=Y维度  
+//   int gridSize = (int)sqrtf((float)nranks);; // 动态计算网格大小  
+    
+//   ssize_t count, partOffset, partCount, chunkCount;  
+//   ncclCollCbdPart(work, channelId, Proto::Id, sizeof(T), &count, &partOffset, &partCount, &chunkCount);  
+    
+//   T *inputBuf = (T*)work->sendbuff;  
+//   T *outputBuf = (T*)work->recvbuff;  
+//   int workNthreads = isNetOffload ? WARP_SIZE : nthreads;  
+    
+//   if (tid < workNthreads) {  
+//     Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims  
+//       (tid, workNthreads, &ring->prev, &ring->next, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);  
+      
+//     for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {  
+//       int nelem = min(chunkCount, partCount - elemOffset);  
+//       ssize_t dataOffset = partOffset + elemOffset;  
+        
+//       if (dimension == 0) {  
+//         int rankDest = ringRanks[0];  
+//         ssize_t offset = dataOffset + rankDest * count;  
+          
+//         if ((inputBuf + dataOffset == outputBuf + offset) || isNetOffload) {  
+//           prims.directSend(dataOffset, offset, nelem);  
+//         } else {  
+//           prims.directCopySend(dataOffset, offset, nelem);  
+//         }  
+          
+//         for (int j = 1; j < gridSize - 1; ++j) {  
+//           rankDest = ringRanks[gridSize - j];  
+//           offset = dataOffset + rankDest * count;  
+//           prims.directRecvCopyDirectSend(offset, offset, nelem);  
+//         }  
+          
+//         rankDest = ringRanks[1];  
+//         offset = dataOffset + rankDest * count;  
+//         prims.directRecv(offset, nelem);  
+          
+//       } else {  
+ 
+//         int xDimSize = gridSize;  
+//         ssize_t expandedDataSize = nelem * xDimSize;  
+          
+//         int rankDest = ringRanks[0];  
+//         for (int xRank = 0; xRank < xDimSize; xRank++) {  
+//           ssize_t srcOffset = dataOffset + xRank * count;  
+//           ssize_t dstOffset = srcOffset + rankDest * count;  
+//           prims.directSend(srcOffset, dstOffset, nelem);  
+//         }  
+          
+//         for (int j = 1; j < gridSize - 1; ++j) {  
+//           rankDest = ringRanks[gridSize - j];  
+//           for (int xRank = 0; xRank < xDimSize; xRank++) {  
+//             ssize_t offset = dataOffset + (xRank + rankDest * xDimSize) * count;  
+//             prims.directRecvCopyDirectSend(offset, offset, nelem);  
+//           }  
+//         }  
+          
+//         rankDest = ringRanks[1];  
+//         for (int xRank = 0; xRank < xDimSize; xRank++) {  
+//           ssize_t offset = dataOffset + (xRank + rankDest * xDimSize) * count;  
+//           prims.directRecv(offset, nelem);  
+//         }  
+//       }  
+//     }  
+//   }  
+    
+//   if (isNetOffload) barrier_sync(14, nthreads);  
+// }
 }
+
+
 
 template<typename T, typename RedOp>
 struct RunWorkColl<ncclFuncAllGather, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE> {

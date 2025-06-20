@@ -546,50 +546,42 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
         ringNext[i] = -1;
       }
 
-      for (int i = 0; i < nChannels; i++)
-      {
-        ringPrev[0] = 3;
-        ringPrev[1] = 2;
-        ringPrev[2] = 1;
-        ringPrev[3] = 0;
-        ringNext[0] = 3;
-        ringNext[1] = 2;
-        ringNext[2] = 1;
-        ringNext[3] = 0;
-
-        ringPrev[4] = 1;
-        ringPrev[5] = 0;
-        ringPrev[6] = 3;
-        ringPrev[7] = 2;
-        ringNext[4] = 1;
-        ringNext[5] = 0;
-        ringNext[6] = 3;
-        ringNext[7] = 2;
+     
+      for (int c = 0; c < nChannels; ++c) {
+          for (int r = 0; r < nranks; ++r) {
+              int x_coord = r % x;
+              int y_coord = r / x;
+              if (c % 2 == 0) { // X
+                  ringPrev[c * nranks + r] = (x_coord == 0) ? r + (x-1) : r - 1;
+                  ringNext[c * nranks + r] = (x_coord == x-1) ? r - (x-1) : r + 1;
+              } else { // Y
+                  ringPrev[c * nranks + r] = (y_coord == 0) ? r + x*(y-1) : r - x;
+                  ringNext[c * nranks + r] = (y_coord == y-1) ? r - x*(y-1) : r + x;
+              }
+          }
       }
 
-      // // 在这里添加2D拓扑重新计算逻辑
-      // // 假设 n = x * y，重新计算 ringPrev 和 ringNext
-      // for (int c = 0; c < nChannels; c++)
+      // for (int i = 0; i < nChannels; i++)
       // {
-      //   for (int r = 0; r < nranks; r++)
-      //   {
-      //     // 计算2D坐标
-      //     int x_coord = r % x;
-      //     int y_coord = r / x;
+      //   ringPrev[0] = 3;
+      //   ringPrev[1] = 2;
+      //   ringPrev[2] = 1;
+      //   ringPrev[3] = 0;
+      //   ringNext[0] = 3;
+      //   ringNext[1] = 2;
+      //   ringNext[2] = 1;
+      //   ringNext[3] = 0;
 
-      //     // 根据channel决定是x维度还是y维度的ring
-      //     if (c % 2 == 0)
-      //     { // x维度
-      //       ringPrev[c * nranks + r] = (x_coord == 0) ? r + (x - 1) : r - 1;
-      //       ringNext[c * nranks + r] = (x_coord == x - 1) ? r - (x - 1) : r + 1;
-      //     }
-      //     else
-      //     { // y维度
-      //       ringPrev[c * nranks + r] = (y_coord == 0) ? r + x * (y - 1) : r - x;
-      //       ringNext[c * nranks + r] = (y_coord == y - 1) ? r - x * (y - 1) : r + x;
-      //     }
-      //   }
+      //   ringPrev[4] = 1;
+      //   ringPrev[5] = 0;
+      //   ringPrev[6] = 3;
+      //   ringPrev[7] = 2;
+      //   ringNext[4] = 1;
+      //   ringNext[5] = 0;
+      //   ringNext[6] = 3;
+      //   ringNext[7] = 2;
       // }
+
     }
   }
 
@@ -600,10 +592,13 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
   }
   NCCLCHECKGOTO(connectTrees(comm, treeToParent, treeToChild0, treeToChild1, treePatterns), ret, fail);
 
-  for (size_t i = 0; i < 8; i++)
+  if(is_2d_topology)
   {
-    INFO(NCCL_GRAPH, "ringPrev[%d]: %d", i, ringPrev[i]);
-    INFO(NCCL_GRAPH, "ringNext[%d]: %d", i, ringNext[i]);
+    for (size_t i = 0; i < 8; i++)
+    {
+      INFO(NCCL_GRAPH, "ringPrev[%d]: %d", i, ringPrev[i]);
+      INFO(NCCL_GRAPH, "ringNext[%d]: %d", i, ringNext[i]);
+    }
   }
 
   // Duplicate ringPrev/ringNext for ncclBuildRing
