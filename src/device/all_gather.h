@@ -15,20 +15,8 @@ namespace {
     const int *ringRanks = ring->userRanks;
     const int nranks = ncclShmem.comm.nRanks;
 
-    // // 添加2D拓扑调试信息  
-    // if (tid == 0) {  
-    //   printf("[DEBUG] Rank %d, Channel %d, Dimension %d (0=X,1=Y), ringRanks[0]=%d, ringRanks[1]=%d\n",   
-    //         ncclShmem.comm.rank, ncclShmem.channelId, ncclShmem.channelId % 2, ringRanks[0], ringRanks[1]);  
-    // }  
-  
     ssize_t count, partOffset, partCount, chunkCount;
     ncclCollCbdPart(work, ncclShmem.channelId, Proto::Id, sizeof(T), &count, &partOffset, &partCount, &chunkCount);
-
-    // // 添加数据分区调试信息  
-    // if (tid == 0) {  
-    //   printf("[DEBUG] Rank %d, Channel %d: count=%ld, partOffset=%ld, partCount=%ld, chunkCount=%ld\n",  
-    //         ncclShmem.comm.rank, ncclShmem.channelId, count, partOffset, partCount, chunkCount);  
-    // }  
 
     ssize_t offset;
     ssize_t dataOffset;
@@ -37,6 +25,14 @@ namespace {
     int workNthreads;
     T *inputBuf = (T*)work->sendbuff;
     T *outputBuf = (T*)work->recvbuff;
+
+  //   if (tid == 0) {
+  //     printf("[runRing] nthreads=%d, isNetOffload=%d, count=%zd, partOffset=%zd, partCount=%zd, chunkCount=%zd, nranks=%d\n",
+  //       nthreads, isNetOffload, count, partOffset, partCount, chunkCount, nranks);
+  //     printf("[runRing] inputBuf=%p, outputBuf=%p, ringRanks: ", inputBuf, outputBuf);
+  //     for (int i = 0; i < nranks; ++i) printf("%d ", ringRanks[i]);
+  //     printf("\n");
+  // }
 
     // If isNetOffload == true, we only use 1 warp to drive Ring algo/network communication
     // and the rest of warps proceed to copy src data into dst buffer in parallel when AG

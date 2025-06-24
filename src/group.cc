@@ -380,8 +380,7 @@ failure:
   return result;
 }
 
-static ncclResult_t doLaunches2D(struct ncclComm *head)
-{
+static ncclResult_t doLaunches2D(struct ncclComm *head) {
   ncclResult_t result = ncclSuccess;
   struct ncclComm *cliqueHead = head;
   struct ncclComm *cliqueNextHead;
@@ -389,99 +388,103 @@ static ncclResult_t doLaunches2D(struct ncclComm *head)
 
   bool is2DTopology = (head->nRanks == 4 && head->nNodes == 1);
 
-  if (is2DTopology)
-  {
-    do
-    {
+  if (!is2DTopology) return doLaunches(head);
+
+  // 先后处理两个维度：mask1 (奇数位), mask2 (偶数位)
+  uint64_t masks[2] = {0x5555555555555555ULL, 0xAAAAAAAAAAAAAAAAULL};
+  for (int dim = 0; dim < 2; ++dim) {
+    cliqueHead = head;
+    do {
       struct ncclComm *comm = cliqueHead;
-      do
-      {
+      // CUDA Graph Capture 检查
+      bool capturingYes = false, capturingNo = false;
+      do {
+        (ncclCudaGraphValid(comm->planner.capturingGraph) ? capturingYes : capturingNo) = true;
         CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), result, failure);
         NCCLCHECKGOTO(ncclLaunchPrepare(comm), result, failure);
-
-        struct ncclKernelPlan **pplan = &comm->planner.unlaunchedPlansHead;
-        while (*pplan != NULL)
-        {
-          struct ncclKernelPlan *plan = *pplan;
-          if ((plan->channelMask & 0x5555555555555555ULL) != 0)
-          {
-            *pplan = plan->next;
-            NCCLCHECKGOTO(ncclLaunchKernelBefore_NoUncapturedCuda(comm, plan), result, failure);
-            NCCLCHECKGOTO(ncclLaunchKernel(comm, plan), result, failure);
-            NCCLCHECKGOTO(ncclLaunchKernelAfter_NoCuda(comm, plan), result, failure);
-          }
-          else
-          {
-            pplan = &plan->next;
-          }
-        }
-
-        // 同步
-        if (useBarrier)
-          ncclCommIntraBarrierIn(comm, 1);
         comm = comm->groupNext[ncclGroupTaskTypeCollective];
       } while (comm != NULL && comm->intraComm0 == cliqueHead->intraComm0);
       cliqueNextHead = comm;
-      cliqueHead = cliqueNextHead;
-    } while (cliqueHead != NULL);
+      if (capturingYes && capturingNo) {
+        WARN("Either none or all communicators in a ncclGroup() can be CUDA graph captured.");
+        result = ncclInvalidUsage;
+        goto failure;
+      }
 
-    cliqueHead = head;
-    do
-    {
-      struct ncclComm *comm = cliqueHead;
-      do
-      {
-        if (useBarrier)
-        {
-          uint32_t barrierResult = ncclCommIntraBarrierOut(comm);
+      // 多轮 launch，每轮每个 comm 只 launch 一个本维度的 plan
+      while (true) {
+        bool moreRounds = false;
+        comm = cliqueHead;
+        do {
+          struct ncclKernelPlan **pplan = &comm->planner.unlaunchedPlansHead;
+          struct ncclKernelPlan *chosenPlan = NULL;
+          // 找到当前 comm 的第一个属于本维度的 plan
+          while (*pplan != NULL) {
+            if (((*pplan)->channelMask & masks[dim]) != 0) {
+              chosenPlan = *pplan;
+              *pplan = chosenPlan->next;
+              break;
+            }
+            pplan = &((*pplan)->next);
+          }
+          CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), result, failure);
+          if (chosenPlan) {
+            NCCLCHECKGOTO(ncclLaunchKernelBefore_NoUncapturedCuda(comm, chosenPlan), result, failure);
+            NCCLCHECKGOTO(ncclLaunchKernel(comm, chosenPlan), result, failure);
+          }
+
+          if (useBarrier) {
+            INFO(NCCL_INIT, "useBarrier useBarrier true");
+            // 本 comm 是否还有本维度的 plan，决定是否进入下一轮
+            bool hasMore = false;
+            struct ncclKernelPlan *tmp = comm->planner.unlaunchedPlansHead;
+            while (tmp) {
+              if ((tmp->channelMask & masks[dim]) != 0) { hasMore = true; break; }
+              tmp = tmp->next;
+            }
+            ncclCommIntraBarrierIn(comm, hasMore ? 1 : 0);
+          }
+        } while ((comm = comm->groupNext[ncclGroupTaskTypeCollective]) != NULL &&
+                  comm->intraComm0 == cliqueHead->intraComm0);
+
+        // barrier out（同步并判断是否还有下一轮）
+        if (useBarrier) {
+          comm = cliqueHead;
+          moreRounds = false;
+          do {
+            if (ncclCommIntraBarrierOut(comm)) moreRounds = true;
+          } while ((comm = comm->groupNext[ncclGroupTaskTypeCollective]) != NULL &&
+                    comm->intraComm0 == cliqueHead->intraComm0);
+        } else {
+          // 没有 barrier 时，只要有 comm 还有本维度的 plan 就继续
+          comm = cliqueHead;
+          do {
+            struct ncclKernelPlan *tmp = comm->planner.unlaunchedPlansHead;
+            while (tmp) {
+              if ((tmp->channelMask & masks[dim]) != 0) { moreRounds = true; break; }
+              tmp = tmp->next;
+            }
+          } while ((comm = comm->groupNext[ncclGroupTaskTypeCollective]) != NULL &&
+                    comm->intraComm0 == cliqueHead->intraComm0);
         }
-        comm = comm->groupNext[ncclGroupTaskTypeCollective];
-      } while (comm != NULL && comm->intraComm0 == cliqueHead->intraComm0);
-      cliqueHead = comm;
-    } while (cliqueHead != NULL);
+        if (!moreRounds) break;
+      }
 
-    cliqueHead = head;
-    do
-    {
-      struct ncclComm *comm = cliqueHead;
-      do
-      {
+      // launch finish（收尾，保留 doLaunches 的 finish 逻辑）
+      comm = cliqueHead;
+      do {
         CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), result, failure);
+        NCCLCHECKGOTO(ncclLaunchFinish(comm), result, failure);
+      } while ((comm = comm->groupNext[ncclGroupTaskTypeCollective]) != NULL &&
+                comm->intraComm0 == cliqueHead->intraComm0);
 
-        struct ncclKernelPlan **pplan = &comm->planner.unlaunchedPlansHead;
-        while (*pplan != NULL)
-        {
-          struct ncclKernelPlan *plan = *pplan;
-          if ((plan->channelMask & 0xAAAAAAAAAAAAAAAAULL) != 0)
-          {
-
-            *pplan = plan->next;
-            NCCLCHECKGOTO(ncclLaunchKernelBefore_NoUncapturedCuda(comm, plan), result, failure);
-            NCCLCHECKGOTO(ncclLaunchKernel(comm, plan), result, failure);
-            NCCLCHECKGOTO(ncclLaunchKernelAfter_NoCuda(comm, plan), result, failure);
-   
-          }
-          else
-          {
-            pplan = &plan->next;
-          }
-        }
-
-        comm = comm->groupNext[ncclGroupTaskTypeCollective];
-      } while (comm != NULL && comm->intraComm0 == cliqueHead->intraComm0);
-      cliqueNextHead = comm;
       cliqueHead = cliqueNextHead;
     } while (cliqueHead != NULL);
-  }
-  else
-  {
-    return doLaunches(head);
   }
 
 failure:
   return result;
 }
-
 static inline void groupLocalResetJobState()
 {
   ncclGroupError = ncclSuccess;
