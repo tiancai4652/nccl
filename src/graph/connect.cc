@@ -708,12 +708,13 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
     NCCLCHECKGOTO(ncclBuildRings(nChannels, rings, comm->rank, comm->nRanks, ringPrev, ringNext), ret, fail);
   }
 
+
   for (int c = 0; c < comm->nChannels; c++)
   {
     struct ncclChannel *channel = comm->channels + c;
-    int dimension = c % 2; // 0 for X, 1 for Y
-    channel->ring.prev = ringPrev[dimension * nranks + comm->rank];
-    channel->ring.next = ringNext[dimension * nranks + comm->rank];
+    // 直接使用 channel 索引 c 来从 ringPrev/ringNext 数组中获取正确的拓扑
+    channel->ring.prev = ringPrev[c * nranks + comm->rank];
+    channel->ring.next = ringNext[c * nranks + comm->rank];
   }
 
 exit:
