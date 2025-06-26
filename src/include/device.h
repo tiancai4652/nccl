@@ -323,10 +323,10 @@ __host__ __device__ inline void ncclCollCbdPart(
     struct ncclDevWorkColl* work, uint32_t channelId, int proto, int eltSize,
     Int* count, Int* partOffset, Int* partCount, Int* chunkCount
   ) {
+  
+  // 首先，执行原有的逻辑，得到一个默认的分割结果
   int eltPerGrain = ncclProtoGrainSize(proto)/eltSize;
   int nMidChannels = work->channelHi - work->channelLo - 1;
-  // We can assum that nMidChannels<0 implies countMid==0, which let's us assume
-  // that countMid*nMidChannels == 0.
   if (count != nullptr) {
     *count = work->cbd.countLo + work->cbd.countMid*nMidChannels + work->cbd.countHi;
   }
@@ -344,6 +344,39 @@ __host__ __device__ inline void ncclCollCbdPart(
     *partCount = work->cbd.countMid;
     *chunkCount = work->cbd.chunkGrainsMid*eltPerGrain;
   }
+
+  // ========================== 【最终核心修正】 ==========================
+  // 如果启用了我们的2D算法，并且当前处于第二阶段（Y维度，奇数channel）
+  // if (work->use_2d_algo && (channelId % 2) != 0) {
+  if (channelId % 2 != 0) {
+    // 1. 计算第二阶段的真正工作总量
+    //    这个总量是第一阶段（X维度）聚合后的大小，即 dimX * 原始count
+    Int dimX_nranks=2;
+    Int dimY_nranks=2;
+    Int total_data_phase2 = dimX_nranks * (*count);
+
+    // 2. 重新计算Y维度上的channel信息
+    int nYChannels = 0; // Y维度上的channel总数
+    int yChannelIndex = -1; // 当前channel在Y维度channel中的索引
+    for (int c = work->channelLo; c <= work->channelHi; c++) {
+      if (c % 2 != 0) {
+        if (c == channelId) yChannelIndex = nYChannels;
+        nYChannels++;
+      }
+    }
+    
+    // 3. 将第二阶段的总工作量，在Y维度的channel之间进行平均分配
+    if (nYChannels > 0) {
+      Int base_part = total_data_phase2 / nYChannels;
+      Int remainder = total_data_phase2 % nYChannels;
+      *partCount = base_part + (yChannelIndex < remainder ? 1 : 0);
+      *partOffset = base_part * yChannelIndex + min((Int)yChannelIndex, remainder);
+      // chunkCount可以暂时沿用之前的值，或者也进行相应的放大
+      // 放大chunkCount有助于提升大数据量下的性能
+      *chunkCount *= dimX_nranks;
+    }
+  }
+  // =====================================================================
 }
 
 struct alignas(16) ncclDevWorkCollReg {

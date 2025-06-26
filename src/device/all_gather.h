@@ -9,128 +9,79 @@
 #include "primitives.h"
 
 
-namespace {
-
-/**
- * @brief 通用的、参数化的子环AllGather内核
- *
- * 这个内核被设计用来在一个更大的通信域内的子环上执行AllGather操作。
- * 它的核心特性是算法步数由传入的子环大小(sub_nranks)动态决定，
- * 而非由全局通信域大小(nranks)写死。
- *
- * 主机端合约 (Host-side Contract):
- * 为了让此内核正常工作，调用者必须在 `ncclDevWorkColl` 结构体中
- * 正确填充以下两个成员：
- * - work->dimX_nranks: X维度的子环大小
- * - work->dimY_nranks: Y维度的子环大小
- */
+namespace {// 最终调试版内核 - 追踪数据内容
 template<typename T, typename RedOp, typename Proto, bool isNetOffload = false>
 __device__ __forceinline__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
-  // 步骤 1: 参数化 - 根据Channel ID获取当前子环的大小 (sub_nranks)，这使其具有通用性
+  // --- 设置部分 ---
   const int channelId = ncclShmem.channelId;
+  const int myRank = ncclShmem.comm.rank;
+  const int sub_nranks = 2;
 
-  // const int sub_nranks = (channelId % 2 == 0) ? work->dimX_nranks : work->dimY_nranks;
-  const int sub_nranks = (channelId % 2 == 0) ? 2 : 2;
-
-  // 步骤 2: 标准设置 - 与原版runRing保持一致
-  // 保留流水线结构以避免死锁
   ncclRing *ring = &ncclShmem.channel.ring;
-  const int *ringRanks = ring->userRanks;
-  const int nranks = ncclShmem.comm.nRanks; // 全局nranks，用于计算内存偏移
   ssize_t count, partOffset, partCount, chunkCount;
   ncclCollCbdPart(work, channelId, Proto::Id, sizeof(T), &count, &partOffset, &partCount, &chunkCount);
-  ssize_t offset;
-  ssize_t dataOffset;
-  int nelem;
-  int rankDest;
-  int workNthreads;
-  T *inputBuf = (T*)work->sendbuff;
-  T *outputBuf = (T*)work->recvbuff;
+  
+  T *work_inputBuf = (T*)work->sendbuff;
+  T *work_outputBuf = (T*)work->recvbuff;
 
-  // ========================== DEBUG PRINT 1: 初始状态 ==========================
-  // 只让每个Block的第一个线程打印，避免信息爆炸
-  if (tid == 0) {
-    printf("GPU-DBG [Ch:%d R:%d] Kernel Start. sub_nranks=%d, ring_prev=%d, ring_next=%d, input=%p, output=%p\n",
-        channelId, ncclShmem.comm.rank, sub_nranks, ring->prev, ring->next, inputBuf, outputBuf);
-  }
-  // ===========================================================================
-
-
-  if (inputBuf != outputBuf && (channelId % 2) != 0) {
-  inputBuf = outputBuf;
-
-   // ====================== DEBUG PRINT 2: 检查指针修正 ======================
-    if (tid == 0) {
-      printf("GPU-DBG [Ch:%d R:%d] Phase 2 Pointer Fix: new_input=%p\n",
-          channelId, ncclShmem.comm.rank, inputBuf);
-    }
-    // =======================================================================
-}
-
-  if (isNetOffload) {
-    workNthreads = WARP_SIZE;
-    chunkCount = NCCL_MAX_NET_SIZE;
-  } else {
-    workNthreads = nthreads;
-  }
-
-  if (tid < workNthreads) {
-    // Primitives的初始化无需更改，它会正确使用您在topo.cc中为子环设置的ring->prev和ring->next
-    Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims
-      (tid, workNthreads, &ring->prev, &ring->next, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
+  // --- 第二阶段数据流链接 ---
+  T* inputBuf = (channelId % 2 == 0) ? work_inputBuf : work_outputBuf;
+  T* outputBuf = work_outputBuf;
+  // 在in-place模式下，第二阶段的input和output都是同一个work_outputBuf，逻辑依然成立
+  
+  if (tid < nthreads) {
+    Primitives<T, RedOp, FanSymmetric<1>, 1, ProtoSimple<1, 1>, 0> prims
+      (tid, nthreads, &ring->prev, &ring->next, inputBuf, outputBuf, work->redOpArg);
 
     for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {
-      nelem = min(chunkCount, partCount - elemOffset);
-      dataOffset = partOffset + elemOffset;
+      int nelem = min(chunkCount, partCount - elemOffset);
+      ssize_t dataOffset = partOffset + elemOffset;
+      
+      int peerRank = ring->prev;
+      ssize_t sendDataOffset = dataOffset;
+      ssize_t myDestOffset = dataOffset + myRank * count;
+      ssize_t peerDestOffset = dataOffset + peerRank * count;
 
-      // 【算法结构第1部分：初始发送】
-      // 保持原版runRing的逻辑，以正确处理in-place和out-of-place情况。
-      // 此处的offset计算用于本地数据拷贝或in-place检查。
-      rankDest = ringRanks[0]; // ringRanks[0] is my own rank
-      offset = dataOffset + rankDest * count;
-      if ((inputBuf + dataOffset == outputBuf + offset) || isNetOffload) {
-        prims.directSend(dataOffset, offset, nelem);
-      } else {
-        prims.directCopySend(dataOffset, offset, nelem);
-      }
-
-      // 【算法结构第2部分：中间转发循环】
-      // 这是通用性的核心：循环次数由 sub_nranks 决定！
-      // 对于2x2 (sub_nranks=2)，此循环不执行。
-      // 对于3x3 (sub_nranks=3)，此循环执行1次。
-      for (int j = 1; j < sub_nranks - 1; ++j) {
-        // offset计算使用全局rank信息，确保数据被放置到正确的全局槽位。
-        // rankDest的计算沿用原版逻辑，它基于userRanks的顺序来确定数据块的归属。
-        rankDest = ringRanks[nranks - j];
-        offset = dataOffset + rankDest * count;
-        // 这个复合操作是维持流水线、避免死锁的关键
-        prims.directRecvCopyDirectSend(offset, offset, nelem);
-      }
-
-      // 【算法结构第3部分：最终接收】
-      // 接收来自前驱节点的最后一块数据，并根据前驱节点的rank ID将其放到正确的槽位。
-      rankDest = ring->prev; // 最终修正：动态获取来源rank ID
-      offset = dataOffset + rankDest * count;
-
-      // ==================== DEBUG PRINT 3: 最终放置前检查 ====================
+      // ========================== DEBUG PRINT 1: 通信前状态 ==========================
       if (tid == 0) {
-        printf("GPU-DBG [Ch:%d R:%d] Final Recv: rankDest=%d, offset=%lld, nelem=%d\n",
-            channelId, ncclShmem.comm.rank, rankDest, (long long)offset, nelem);
+        printf("GPU-DBG [Ch:%d R:%d] PRE. in[0]=%f, out[my]=%f, out[peer]=%f\n",
+            channelId, myRank,
+            (float)__ldg(inputBuf + sendDataOffset),               // 查看将要发送的数据
+            (float)__ldg(outputBuf + myDestOffset),              // 查看自己目标位置的当前数据
+            (float)__ldg(outputBuf + peerDestOffset));           // 查看邻居目标位置的当前数据
       }
-      // =====================================================================
-      prims.directRecv(offset, nelem);
-    }
-  } else if (inputBuf != outputBuf + ringRanks[0] * count) {
-    // isNetOffload为true时，其他warp执行的拷贝优化，保持不变
-    inputBuf = inputBuf + partOffset;
-    outputBuf = outputBuf + partOffset + ringRanks[0] * count;
-    reduceCopy<COLL_UNROLL, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs=*/0>
-      (tid - workNthreads, nthreads - workNthreads, work->redOpArg, &work->redOpArg, false, 1, (void**)&inputBuf, 1, (void**)&outputBuf, partCount);
-  }
+      // ==============================================================================
 
-  if (isNetOffload) barrier_sync(14, nthreads);
-}
-} // end namespace
+      if (myRank < peerRank) {
+        // --- 小Rank: 先发送，后接收 ---
+        if ((work_inputBuf + sendDataOffset == work_outputBuf + myDestOffset)) {
+          prims.directSend(sendDataOffset, myDestOffset, nelem);
+        } else {
+          prims.directCopySend(sendDataOffset, myDestOffset, nelem);
+        }
+        prims.directRecv(peerDestOffset, nelem);
+      } else {
+        // --- 大Rank: 先接收，后发送 ---
+        prims.directRecv(peerDestOffset, nelem);
+        if ((work_inputBuf + sendDataOffset == work_outputBuf + myDestOffset)) {
+          prims.directSend(sendDataOffset, myDestOffset, nelem);
+        } else {
+          prims.directCopySend(sendDataOffset, myDestOffset, nelem);
+        }
+      }
+
+      // ========================== DEBUG PRINT 2: 通信后状态 ==========================
+      __syncthreads(); // 确保所有收发操作对所有线程可见
+      if (tid == 0) {
+        printf("GPU-DBG [Ch:%d R:%d] POST. out[my]=%f, out[peer]=%f\n",
+            channelId, myRank,
+            (float)__ldg(outputBuf + myDestOffset),              // 查看自己目标位置的最终数据
+            (float)__ldg(outputBuf + peerDestOffset));           // 查看邻居目标位置的最终数据
+      }
+      // ==============================================================================
+    }
+  } 
+}} // end namespace
 template<typename T, typename RedOp>
 struct RunWorkColl<ncclFuncAllGather, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
