@@ -407,6 +407,8 @@ struct ncclKernelPlanner {
   struct ncclIntruQueue<struct ncclKernelPlan, &ncclKernelPlan::next> planQueue;
   // First of the unlaunched kernels in `planQueue`
   struct ncclKernelPlan* unlaunchedPlansHead;
+
+  struct ncclKernelPlan* savedPlans;
 };
 
 #define NCCL_MAGIC 0x0280028002800280 // Nickel atomic number is 28.

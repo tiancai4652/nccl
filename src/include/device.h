@@ -454,6 +454,7 @@ struct ncclDevComm {
   int buffSizes[NCCL_NUM_PROTOCOLS];
   int p2pChunkSize;
   int isAllNvlink;
+  int dimension;
 
   int* collNetDenseToUserRank;
 

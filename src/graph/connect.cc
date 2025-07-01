@@ -12,6 +12,8 @@
 #include "rings.h"
 #include "topo.h"
 
+bool is_print = true;
+
 /******************************************************************/
 /********************* Internode connection ***********************/
 /******************************************************************/
@@ -546,19 +548,23 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
         ringNext[i] = -1;
       }
 
-     
-      for (int c = 0; c < nChannels; ++c) {
-          for (int r = 0; r < nranks; ++r) {
-              int x_coord = r % x;
-              int y_coord = r / x;
-              if (c % 2 == 0) { // X
-                  ringPrev[c * nranks + r] = (x_coord == 0) ? r + (x-1) : r - 1;
-                  ringNext[c * nranks + r] = (x_coord == x-1) ? r - (x-1) : r + 1;
-              } else { // Y
-                  ringPrev[c * nranks + r] = (y_coord == 0) ? r + x*(y-1) : r - x;
-                  ringNext[c * nranks + r] = (y_coord == y-1) ? r - x*(y-1) : r + x;
-              }
+      for (int c = 0; c < nChannels; ++c)
+      {
+        for (int r = 0; r < nranks; ++r)
+        {
+          int x_coord = r % x;
+          int y_coord = r / x;
+          if (c % 2 == 0)
+          { // X
+            ringPrev[c * nranks + r] = (x_coord == 0) ? r + (x - 1) : r - 1;
+            ringNext[c * nranks + r] = (x_coord == x - 1) ? r - (x - 1) : r + 1;
           }
+          else
+          { // Y
+            ringPrev[c * nranks + r] = (y_coord == 0) ? r + x * (y - 1) : r - x;
+            ringNext[c * nranks + r] = (y_coord == y - 1) ? r - x * (y - 1) : r + x;
+          }
+        }
       }
 
       // for (int i = 0; i < nChannels; i++)
@@ -581,7 +587,6 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
       //   ringNext[6] = 3;
       //   ringNext[7] = 2;
       // }
-
     }
   }
 
@@ -592,14 +597,14 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
   }
   NCCLCHECKGOTO(connectTrees(comm, treeToParent, treeToChild0, treeToChild1, treePatterns), ret, fail);
 
-  if(is_2d_topology)
-  {
-    for (size_t i = 0; i < 8; i++)
-    {
-      INFO(NCCL_GRAPH, "ringPrev[%d]: %d", i, ringPrev[i]);
-      INFO(NCCL_GRAPH, "ringNext[%d]: %d", i, ringNext[i]);
-    }
-  }
+  // if(is_2d_topology)
+  // {
+  //   for (size_t i = 0; i < 8; i++)
+  //   {
+  //     INFO(NCCL_GRAPH, "ringPrev[%d]: %d", i, ringPrev[i]);
+  //     INFO(NCCL_GRAPH, "ringNext[%d]: %d", i, ringNext[i]);
+  //   }
+  // }
 
   // Duplicate ringPrev/ringNext for ncclBuildRing
   memcpy(ringPrev + nChannels * nranks, ringPrev, nChannels * nranks * sizeof(int));
@@ -708,13 +713,19 @@ ncclResult_t ncclTopoPostset(struct ncclComm *comm, int *firstRanks, int *treePa
     NCCLCHECKGOTO(ncclBuildRings(nChannels, rings, comm->rank, comm->nRanks, ringPrev, ringNext), ret, fail);
   }
 
-
   for (int c = 0; c < comm->nChannels; c++)
   {
     struct ncclChannel *channel = comm->channels + c;
     // 直接使用 channel 索引 c 来从 ringPrev/ringNext 数组中获取正确的拓扑
     channel->ring.prev = ringPrev[c * nranks + comm->rank];
     channel->ring.next = ringNext[c * nranks + comm->rank];
+
+    if (is_print)
+    {
+      // 打印信息
+      printf("*******************Channel id: %d, Rank: %d, Prev: %d, Next: %d\n",
+             c, comm->rank, channel->ring.prev, channel->ring.next);
+    }
   }
 
 exit:
