@@ -12,11 +12,66 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
   if (comm && comm->nRanks > 1) {
     comm->useGdr = true;
     comm->useNetPXN = false;
-    for (int c = 0; c < comm->nChannels; c++) {
-      struct ncclChannel* channel = comm->channels + c;
-      NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &channel->ring.prev, 1, &channel->ring.next, 0), ret, fail);
+    
+    // 检查是否启用2D ring
+    const int xDim = 2;  // 写死X维度
+    const int yDim = comm->nRanks / xDim;
+    const bool use2D = true;
+    
+    if (use2D) {
+      INFO(NCCL_INIT, "Setting up 2D ring connections: %dx%d", xDim, yDim);
+      
+      // 建立1D ring连接（原有逻辑）
+      for (int c = 0; c < comm->nChannels; c++) {
+        struct ncclChannel* channel = comm->channels + c;
+        NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &channel->ring.prev, 1, &channel->ring.next, 0), ret, fail);
+      }
+      NCCLCHECKGOTO(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_RING], 0), ret, fail);
+      
+      // 建立2D ring的额外连接
+      const int rank = comm->rank;
+      const int xRank = rank % xDim;
+      const int yRank = rank / xDim;
+      
+      // 为每个channel建立2D连接
+      for (int c = 0; c < comm->nChannels; c++) {
+        struct ncclChannel* channel = comm->channels + c;
+        
+        // X维连接：同一行的rank连接
+        int xPrev = (xRank - 1 + xDim) % xDim + yRank * xDim;
+        int xNext = (xRank + 1) % xDim + yRank * xDim;
+        
+        // Y维连接：同一列的rank连接
+        int yPrev = xRank + ((yRank - 1 + yDim) % yDim) * xDim;
+        int yNext = xRank + ((yRank + 1) % yDim) * xDim;
+        
+        // 建立X维连接
+        if (xPrev != rank) {
+          NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &xPrev, 1, &xNext, 1), ret, fail);
+        }
+        
+        // 建立Y维连接
+        if (yPrev != rank) {
+          NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &yPrev, 1, &yNext, 1), ret, fail);
+        }
+
+        INFO(NCCL_INIT, "2D ring connections established for rank %d: X(%d,%d) Y(%d,%d)", 
+           rank, xRank, yRank, xPrev, yPrev);
+      }
+      
+      // 设置2D ring的graph
+      NCCLCHECKGOTO(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_RING], 1), ret, fail);
+      
+      
+    } else {
+      // 原有的1D ring连接逻辑
+      for (int c = 0; c < comm->nChannels; c++) {
+        struct ncclChannel* channel = comm->channels + c;
+        NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &channel->ring.prev, 1, &channel->ring.next, 0), ret, fail);
+      }
+      NCCLCHECKGOTO(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_RING], 0), ret, fail);
     }
-    NCCLCHECKGOTO(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_RING], 0), ret, fail);
+    
     if (ncclParamLocalRegister() || ncclParamGraphRegister()) {
       NCCLCHECK(ncclCalloc(&ringInfo, comm->nRanks));
       ringInfo[comm->rank].useGdr = comm->useGdr;
