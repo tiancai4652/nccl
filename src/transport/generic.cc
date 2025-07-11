@@ -19,7 +19,7 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
     const bool use2D = true;
     
     if (use2D) {
-      INFO(NCCL_INIT, "Setting up 2D ring connections: %dx%d", xDim, yDim);
+      printf("[2D_RING_DEBUG] Setting up 2D ring connections: %dx%d. \n", xDim, yDim);
       
       // 建立1D ring连接（原有逻辑）
       for (int c = 0; c < comm->nChannels; c++) {
@@ -55,8 +55,9 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
           NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &yPrev, 1, &yNext, 1), ret, fail);
         }
 
-        INFO(NCCL_INIT, "2D ring connections established for rank %d: X(%d,%d) Y(%d,%d)", 
-           rank, xRank, yRank, xPrev, yPrev);
+        // INFO(NCCL_INIT, "2D ring connections established for rank %d: X(%d,%d) Y(%d,%d)", 
+        //    rank, xRank, yRank, xPrev, yPrev);
+        printf("[2D_RING_DEBUG] 2D ring connections %d: %d %d %d %d. \n", rank, xPrev,xNext,yPrev,yNext);
       }
       
       // 设置2D ring的graph

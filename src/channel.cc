@@ -16,6 +16,7 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
   int nRanks = comm->nRanks;
   int nvlsRanks = comm->localRanks;
   int nPeers = nRanks + 1 /* Collnet */ + nvlsRanks /* NVLS */;
+  printf("[2D_RING_DEBUG] nPeers: %d. \n",nPeers);
   channel->id = channelId;
   channel->workFifoProduced = 0;
 

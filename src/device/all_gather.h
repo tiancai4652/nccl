@@ -65,232 +65,110 @@ namespace {
 
      
       if (use2D && tid == 0) {
-       printf("[2D_RING_DEBUG] Rank %d: xPrevs, xNexts, yPrevs, yNexts \n", rank, xPrevs[0], xNexts[0], yPrevs[0], yNexts[0]);
+       printf("[2D_RING_DEBUG] Rank %d: %d, %d, %d, %d \n", rank, xPrevs[0], xNexts[0], yPrevs[0], yNexts[0]);
       }
 
       if (use2D) {
-
-        int half = workNthreads / 2;
-
-
-        // 2D Ring Pipeline 实现
-        const ssize_t slice_size = count / slice_count;
-        
-        for (int slice = 0; slice < slice_count; ++slice) {
-          ssize_t slice_offset = partOffset + slice * slice_size;
-          int nelem = min(slice_size, partCount - slice * slice_size);
-          
+        {
           if (tid == 0) {
-            printf("[2D_RING_DEBUG] Rank %d: Processing slice %d/%d, slice_offset=%ld, nelem=%d\n", 
-                   rank, slice, slice_count, slice_offset, nelem);
-          }
-          
-          if (slice == 0) {
-            if (tid == 0) {
-              printf("[2D_RING_DEBUG] slice == 0 primsX Start \n");
+            printf("[2D_RING_DEBUG] Create primsX. \n");
+           }
+        // 阶段一：X维 AllGather
+        Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> primsX(
+          tid, workNthreads, xPrevs, xNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
+
+        // Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims
+        //   (tid, workNthreads, &ring->prev, &ring->next, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
+
+          printf("[2D_RING_DEBUG] Create primsX finish. \n");
+        for (int xStep = 0; xStep < xDim - 1; ++xStep) {
+          int xRingRank = (xRank + xStep) % xDim;
+          int rankDest = xRingRank + yRank * xDim;
+          ssize_t offset = partOffset + rankDest * count;
+          int nelem = partCount;
+          if (xStep == 0) {
+            printf("[2D_RING_DEBUG] primsX xStep 1. \n");
+            if ((inputBuf + partOffset == outputBuf + offset) || isNetOffload) {
+              primsX.directSend(partOffset, offset, nelem);
+            } else {
+              primsX.directCopySend(partOffset, offset, nelem);
             }
-            Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> primsX
-            (tid, workNthreads, xPrevs, xNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
-            if (tid == 0) {
-              printf("[2D_RING_DEBUG] slice == 0 primsX After \n");
-            }
-            // 阶段1：X维启动 - 传递第1片数据
-            // if (tid == 0) {
-            //   printf("[2D_RING_DEBUG] slice == 0 \n");
-            //   printf("[2D_RING_DEBUG] Rank %d: Phase 1 - X-dimension ring for slice 0\n", rank);
-            // }
-            
-            for (int xStep = 0; xStep < xDim - 1; ++xStep) {
-              int xRingRank = (xRank + xStep) % xDim;
-              rankDest = xRingRank + yRank * xDim;
-              offset = slice_offset + rankDest * count;
-              
-              if (tid == 0) {
-                printf("[2D_RING_DEBUG] Rank %d: X-step %d: sending to rank %d, offset=%ld\n", 
-                       rank, xStep, rankDest, offset);
-              }
-              
-              if (xStep == 0) {
-                // 第一步：从输入缓冲区发送
-                if ((inputBuf + slice_offset == outputBuf + offset) || isNetOffload) {
-                  primsX.directSend(slice_offset, offset, nelem);
-                } else {
-                  primsX.directCopySend(slice_offset, offset, nelem);
-                }
-              } else {
-                // 后续步骤：从接收缓冲区转发
-                primsX.directRecvCopyDirectSend(offset, offset, nelem);
-              }
-            }
-            
-            // X维最终接收
-            int finalXRank = (xRank + xDim - 1) % xDim;
-            int finalXDest = finalXRank + yRank * xDim;
-            offset = slice_offset + finalXDest * count;
-            
-            if (tid == 0) {
-              printf("[2D_RING_DEBUG] Rank %d: X-dimension final receive from rank %d, offset=%ld\n", 
-                     rank, finalXDest, offset);
-            }
-            
-            primsX.directRecv(offset, nelem);
-            
-          } else if (slice < slice_count - 1) {
-            // 阶段2：X-Y并行pipeline
-            if (tid == 0) {
-              printf("[2D_RING_DEBUG] slice < slice_count - 1");
-              printf("[2D_RING_DEBUG] Rank %d: Phase 2 - X-Y parallel pipeline for slice %d\n", rank, slice);
-            }
-            
-            
-            if (tid < half) 
-            {
-              Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> primsX
-              (tid, workNthreads, xPrevs, xNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
-              printf("[2D_RING_DEBUG] Rank %d: primsX\n", rank);
-            // X维：传递当前片
-            for (int xStep = 0; xStep < xDim - 1; ++xStep) {
-              int xRingRank = (xRank + xStep) % xDim;
-              rankDest = xRingRank + yRank * xDim;
-              offset = slice_offset + rankDest * count;
-              
-              if (tid == 0) {
-                printf("[2D_RING_DEBUG] Rank %d: X-step %d: sending slice %d to rank %d, offset=%ld\n", 
-                       rank, xStep, slice, rankDest, offset);
-              }
-              
-              if (xStep == 0) {
-                if ((inputBuf + slice_offset == outputBuf + offset) || isNetOffload) {
-                  primsX.directSend(slice_offset, offset, nelem);
-                } else {
-                  primsX.directCopySend(slice_offset, offset, nelem);
-                }
-              } else {
-                primsX.directRecvCopyDirectSend(offset, offset, nelem);
-              }
-            }
-          }
-            else
-            {
-              
-              Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> primsY
-              (tid, workNthreads, yPrevs, yNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
-              printf("[2D_RING_DEBUG] Rank %d: primsY\n", rank);
-            // Y维：传递上一片（此时上一片在X维已完成）
-            for (int yStep = 0; yStep < yDim - 1; ++yStep) {
-              int yRingRank = (yRank + yStep) % yDim;
-              rankDest = xRank + yRingRank * xDim;
-              offset = slice_offset - slice_size + rankDest * count;  // 上一片的位置
-              
-              if (tid == 0) {
-                printf("[2D_RING_DEBUG] Rank %d: Y-step %d: sending slice %d to rank %d, offset=%ld\n", 
-                       rank, yStep, slice-1, rankDest, offset);
-              }
-              
-              if (yStep == 0) {
-                if ((inputBuf + slice_offset - slice_size == outputBuf + offset) || isNetOffload) {
-                  primsY.directSend(slice_offset - slice_size, offset, nelem);
-                } else {
-                  primsY.directCopySend(slice_offset - slice_size, offset, nelem);
-                }
-              } else {
-                primsY.directRecvCopyDirectSend(offset, offset, nelem);
-              }
-            }}
-            
-            // 同步点
-            __syncthreads();
-            
-            if (tid == 0) {
-              printf("[2D_RING_DEBUG] Rank %d: Phase 2 completed for slice %d\n", rank, slice);
-            }
-            
           } else {
-
-            printf("[2D_RING_DEBUG] slice == slice_count - 1");
-
-            Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> primsY
-            (tid, workNthreads, yPrevs, yNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
-            printf("[2D_RING_DEBUG] Rank %d: primsY\n", rank);
-            // 阶段3：Y维收尾 - 传递最后一片
-            if (tid == 0) {
-              printf("[2D_RING_DEBUG] Rank %d: Phase 3 - Y-dimension final for slice %d\n", rank, slice);
-            }
-            
-            for (int yStep = 0; yStep < yDim - 1; ++yStep) {
-              int yRingRank = (yRank + yStep) % yDim;
-              rankDest = xRank + yRingRank * xDim;
-              offset = slice_offset + rankDest * count;
-              
-              if (tid == 0) {
-                printf("[2D_RING_DEBUG] Rank %d: Y-step %d: sending final slice %d to rank %d, offset=%ld\n", 
-                       rank, yStep, slice, rankDest, offset);
-              }
-              
-              if (yStep == 0) {
-                if ((inputBuf + slice_offset == outputBuf + offset) || isNetOffload) {
-                  primsY.directSend(slice_offset, offset, nelem);
-                } else {
-                  primsY.directCopySend(slice_offset, offset, nelem);
-                }
-              } else {
-                primsY.directRecvCopyDirectSend(offset, offset, nelem);
-              }
-            }
-            
-            // Y维最终接收
-            int finalYRank = (yRank + yDim - 1) % yDim;
-            int finalYDest = xRank + finalYRank * xDim;
-            offset = slice_offset + finalYDest * count;
-            
-            if (tid == 0) {
-              printf("[2D_RING_DEBUG] Rank %d: Y-dimension final receive from rank %d, offset=%ld\n", 
-                     rank, finalYDest, offset);
-            }
-            
-            primsY.directRecv(offset, nelem);
+            printf("[2D_RING_DEBUG] primsX xStep 2. \n");
+            primsX.directRecvCopyDirectSend(offset, offset, nelem);
           }
         }
-        
-        if (tid == 0) {
-          printf("[2D_RING_DEBUG] Rank %d: 2D Ring AllGather completed\n", rank);
+        printf("[2D_RING_DEBUG] primsX xStep 3. \n");
+        // X维最终接收
+        int finalXRank = (xRank + xDim - 1) % xDim;
+        int finalXDest = finalXRank + yRank * xDim;
+        ssize_t offset = partOffset + finalXDest * count;
+        int nelem = partCount;
+        primsX.directRecv(offset, nelem);
         }
-        
+        // 同步，确保所有线程完成X维
+        __syncthreads();
+        // {
+        // // 阶段二：Y维 AllGather
+        // Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> primsY(
+        //   tid, workNthreads, yPrevs, yNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
+        // for (int yStep = 0; yStep < yDim - 1; ++yStep) {
+        //   int yRingRank = (yRank + yStep) % yDim;
+        //   int rankDest = xRank + yRingRank * xDim;
+        //   ssize_t offset = partOffset + rankDest * count;
+        //   int nelem = partCount;
+        //   if (yStep == 0) {
+        //     if ((inputBuf + partOffset == outputBuf + offset) || isNetOffload) {
+        //       primsY.directSend(partOffset, offset, nelem);
+        //     } else {
+        //       primsY.directCopySend(partOffset, offset, nelem);
+        //     }
+        //   } else {
+        //     primsY.directRecvCopyDirectSend(offset, offset, nelem);
+        //   }
+        // }
+        // // Y维最终接收
+        // int finalYRank = (yRank + yDim - 1) % yDim;
+        // int finalYDest = xRank + finalYRank * xDim;
+        // ssize_t offsetY = partOffset + finalYDest * count;
+        // int nelemY = partCount;
+        // primsY.directRecv(offsetY, nelemY);
+        // }
       } else {
 
-        Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims
-        (tid, workNthreads, &ring->prev, &ring->next, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
-      printf("[2D_RING_DEBUG] Rank %d: prims\n", rank);
-        // 原有的1D Ring实现
-        for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {
-          /////////////// begin AllGather steps ///////////////
-          nelem = min(chunkCount, partCount - elemOffset);
-          dataOffset = partOffset + elemOffset;
+      //   Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims
+      //   (tid, workNthreads, &ring->prev, &ring->next, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
+      // printf("[2D_RING_DEBUG] Rank %d: prims\n", rank);
+      //   // 原有的1D Ring实现
+      //   for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {
+      //     /////////////// begin AllGather steps ///////////////
+      //     nelem = min(chunkCount, partCount - elemOffset);
+      //     dataOffset = partOffset + elemOffset;
 
-          // step 0: push data to next GPU
-          rankDest = ringRanks[0];
-          offset = dataOffset + rankDest * count;
+      //     // step 0: push data to next GPU
+      //     rankDest = ringRanks[0];
+      //     offset = dataOffset + rankDest * count;
 
-          if ((inputBuf + dataOffset == outputBuf + offset) || isNetOffload) { // In place or onePPN
-            prims.directSend(dataOffset, offset, nelem);
-          } else {
-            prims.directCopySend(dataOffset, offset, nelem);
-          }
+      //     if ((inputBuf + dataOffset == outputBuf + offset) || isNetOffload) { // In place or onePPN
+      //       prims.directSend(dataOffset, offset, nelem);
+      //     } else {
+      //       prims.directCopySend(dataOffset, offset, nelem);
+      //     }
 
-          // k-2 steps: copy to next GPU
-          for (int j = 1; j < nranks - 1; ++j) {
-            rankDest = ringRanks[nranks - j];
-            offset = dataOffset + rankDest * count;
-            prims.directRecvCopyDirectSend(offset, offset, nelem);
-          }
+      //     // k-2 steps: copy to next GPU
+      //     for (int j = 1; j < nranks - 1; ++j) {
+      //       rankDest = ringRanks[nranks - j];
+      //       offset = dataOffset + rankDest * count;
+      //       prims.directRecvCopyDirectSend(offset, offset, nelem);
+      //     }
 
-          // Make final copy from buffer to dest.
-          rankDest = ringRanks[1];
-          offset = dataOffset + rankDest * count;
+      //     // Make final copy from buffer to dest.
+      //     rankDest = ringRanks[1];
+      //     offset = dataOffset + rankDest * count;
 
-          // Final wait/copy.
-          prims.directRecv(offset, nelem);
-        }
+      //     // Final wait/copy.
+      //     prims.directRecv(offset, nelem);
+      //   }
       }
     } else if (inputBuf != outputBuf + ringRanks[0] * count) {
       inputBuf = inputBuf + partOffset;
