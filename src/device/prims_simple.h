@@ -579,7 +579,8 @@ private:
     }
   }
 
- public:
+
+  public:
   __device__ Primitives(
       int tid, int nthreads, int const *recvPeers, int const *sendPeers,
       void const *inputBuf, void *outputBuf, uint64_t redOpArg, uint8_t group=0,
@@ -594,65 +595,38 @@ private:
     index = -1;
     if (mode == primsModeDefault) { // Connect to ranks in sendPeers/recvPeers
       // For send operations, we need an extra warp to overlap the threadfence and the copy
-      // if (tid == 0) 
-      //   {printf("[2D_RING_DEBUG] 1.\n");}
       this->nworkers = nthreads - (MaxSend > 0 && nthreads >= NCCL_SIMPLE_EXTRA_GROUP_IF_NTHREADS_GE ? WARP_SIZE : 0);
-      // if (tid == 0) 
-      // {printf("[2D_RING_DEBUG] 2.\n");}
+
       int nrecv=0, nsend=0;
       // Yes, for some template arguments this code will be unreachable.  That's fine.
       // coverity[dead_error_line]
       while (nrecv < MaxRecv && recvPeers[nrecv] != -1) nrecv++;
-      // if (tid == 0) 
-      {printf("[2D_RING_DEBUG] tid:%d nrecv:%d.\n",tid,nrecv);}
       // coverity[dead_error_line]
       while (nsend < MaxSend && sendPeers[nsend] != -1) nsend++;
-      // if (tid == 0) 
-      {printf("[2D_RING_DEBUG] tid:%d nsend:%d.\n",tid,nsend);}
       this->fan = Fan(nrecv, nsend);
-      // if (tid == 0) 
-      // {printf("[2D_RING_DEBUG] 3.\n");}
 
       constexpr int ThreadPerSync =
         MaxSend >= 16 || MaxRecv >= 16 ? 32 : // NVLS may have an arity > 8. In that case increase the size of the groups
         MaxSend >= 8 || MaxRecv >= 8 ? 16 :
         8; // Allows for all roles (WaitRecv/WaitSend/PostRecv/PostSend) within a single warp
       static_assert(MaxSend <= ThreadPerSync && MaxRecv <= ThreadPerSync, "Not enough threads to cover all peers");
-      // if (tid == 0) 
-      // {printf("[2D_RING_DEBUG] 4.\n");}
+
       assert(2*(nrecv+nsend) <= nthreads); // Ensure no thread is assigned more than one role.
       // Coverity assumes that index will equal tid based on the line below, but it doesn't consider the setting
       // of flags.  This results in multiple false positive overruns being reported here and in all_reduce.h.
       // Unfortunately, we've been unsuccessful in trying to silence them with a single directive here so
       // instead it's being done at the callers.
       // coverity[assignment:FALSE]
-      if      (tid < nrecv)                 { flags |= RoleWaitRecv; index = tid; 
-      printf("[2D_RING_DEBUG] index =%d for 1.\n",index);
-      }
+      if      (tid < nrecv)                 { flags |= RoleWaitRecv; index = tid; }
       // Yes, for some template arguments this code will be unreachable.  That's fine.
       // coverity[dead_error_begin]
-      else if (tid < nrecv+nsend)           { flags |= RoleWaitSend; index = tid-nrecv; 
-        printf("[2D_RING_DEBUG] index =%d for 2.\n",index);}
-      else if (nthreads-nsend <= tid)       { flags |= RolePostSend; index = tid-(nthreads-nsend); 
-        printf("[2D_RING_DEBUG] index =%d for 3.\n",index);}
-      else if (nthreads-nrecv-nsend <= tid) { flags |= RolePostRecv; index = tid-(nthreads-nrecv-nsend); 
-        printf("[2D_RING_DEBUG] index =%d for 4.\n",index);}
+      else if (tid < nrecv+nsend)           { flags |= RoleWaitSend; index = tid-nrecv; }
+      else if (nthreads-nsend <= tid)       { flags |= RolePostSend; index = tid-(nthreads-nsend); }
+      else if (nthreads-nrecv-nsend <= tid) { flags |= RolePostRecv; index = tid-(nthreads-nrecv-nsend); }
 
-      if (flags & (RoleWaitRecv|RolePostRecv)) 
-      {
-        printf("[2D_RING_DEBUG] index =%d, flags =%d, RoleWaitRecv =%d,RolePostRecv =%d.\n",index,flags,RoleWaitRecv,RolePostRecv);
-        peer = recvPeers[index];
-        printf("[DEBUG] After setting peer: tid=%d, peer=%d\n", tid, peer);
-      }
-  
-      if (flags & (RoleWaitSend|RolePostSend))
-      {
-        printf("[2D_RING_DEBUG] index =%d, flags =%d, RoleWaitSend =%d,RolePostSend =%d.\n",index,flags,RoleWaitSend,RolePostSend);
-         peer = sendPeers[index];
-         printf("[DEBUG] After setting peer: tid=%d, peer=%d\n", tid, peer);
-      }
-      
-     
+      if (flags & (RoleWaitRecv|RolePostRecv)) peer = recvPeers[index];
+      if (flags & (RoleWaitSend|RolePostSend)) peer = sendPeers[index];
+
       // Coverity thinks that index could be -1 here but that's not actually the case.
       // coverity[negative_returns:FALSE]
       int sendIpcReg;
@@ -668,28 +642,12 @@ private:
         recvIpcReg = sendIpcReg = collWork ? collWork->regUsed : 0;
         recvNetReg = sendNetReg = collWork ? collWork->netRegUsed : 0;
       }
-      // if (tid == 0) 
-      // {printf("[2D_RING_DEBUG] 6.\n");}
-      // coverity[overrun-call] => Coverity think prims.index can be greater than 1
 
-      // if (peer<0||peer>8) 
-      // {printf("[2D_RING_DEBUG] peer<0||peer>8 loadSendConn peer:%d.\n",peer);}
-      
-      if (flags & (RoleWaitRecv|RolePostRecv)) 
-      {
-        {printf("[2D_RING_DEBUG] 5.\n");}
-        loadRecvConn(ncclShmem.channel.peers[peer], connIndexRecv, collWork ? collWork->direct : 0, recvIpcReg, recvNetReg);
-        {printf("[2D_RING_DEBUG] 55.\n");}
-      }
       // coverity[overrun-call] => Coverity think prims.index can be greater than 1
-      {printf("[2D_RING_DEBUG] 6.\n");}
-      if (flags & (RoleWaitSend|RolePostSend)) 
-      {
-        {printf("[2D_RING_DEBUG] 6.\n");}
-        loadSendConn(ncclShmem.channel.peers[peer], connIndexSend, collWork ? collWork->direct : 0, sendIpcReg, sendNetReg);
-        {printf("[2D_RING_DEBUG] 66.\n");}
-      }
-      // {printf("[2D_RING_DEBUG] 7.\n");}
+      if (flags & (RoleWaitRecv|RolePostRecv)) loadRecvConn(ncclShmem.channel.peers[peer], connIndexRecv, collWork ? collWork->direct : 0, recvIpcReg, recvNetReg);
+      // coverity[overrun-call] => Coverity think prims.index can be greater than 1
+      if (flags & (RoleWaitSend|RolePostSend)) loadSendConn(ncclShmem.channel.peers[peer], connIndexSend, collWork ? collWork->direct : 0, sendIpcReg, sendNetReg);
+
       if (barrierAny(flags & NetDeviceUnpack)) {
         flags |= AnyNetDeviceUnpack;
         // RoleWaitRecv starts at tid=0, so this creates the bitmask of which recv peers
@@ -699,12 +657,10 @@ private:
           ncclShmem.groups[this->group].devicePlugin.unpack.unpackNetDeviceIndexMask = mask;
         }
       }
-      
-      // {printf("[2D_RING_DEBUG] 8.\n");}
+
       // coverity[negative_returns:FALSE] => coverity thinks that index could be -1 but that's not actually the case
       // coverity[var_deref_model] => coverity thinks work can dereferenced if NULL but this is not the case
       setDataPtrs(inputBuf, outputBuf, redOpArg, (struct ncclDevWorkCollReg*)collWork, sendIpcReg || recvIpcReg, peer);
-      {printf("[2D_RING_DEBUG] 9.\n");}
       // coverity[uninit_member] => coverity thinks fan.n is not initialized
     } else if (mode == primsModePatRs || mode == primsModePatAg) { // Connect to all ranks +/- 2^n
       flags |= PatMode;
