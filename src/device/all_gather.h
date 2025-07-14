@@ -38,10 +38,12 @@ namespace {
     const int yPrev = xRank + ((yRank - 1 + yDim) % yDim) * xDim;
     const int yNext = xRank + ((yRank + 1) % yDim) * xDim;
     
-    int xPrevs[2] = {xPrev,-1};
-    int xNexts[2] = {xNext,-1};
-    int yPrevs[2] = {yPrev,-1};
-    int yNexts[2] = {yNext,-1};
+    const int xPrevs[2] = {xPrev,-1};
+    const int xNexts[2] = {xNext,-1};
+    const int yPrevs[2] = {yPrev,-1};
+    const int yNexts[2] = {yNext,-1};
+
+    printf("[2D_RING_DEBUG] Rank %d: %d, %d, %d, %d \n", rank, xPrevs[0], xNexts[0], yPrevs[0], yNexts[0]);
      
     const bool use2D = (nranks == xDim * yDim); // 是否启用2D ring
 
@@ -63,16 +65,14 @@ namespace {
 
       
 
-     
-      if (use2D && tid == 0) {
-       printf("[2D_RING_DEBUG] Rank %d: %d, %d, %d, %d \n", rank, xPrevs[0], xNexts[0], yPrevs[0], yNexts[0]);
-      }
 
       if (use2D) {
         {
           if (tid == 0) {
             printf("[2D_RING_DEBUG] Create primsX. \n");
            }
+
+        __syncthreads();
         // 阶段一：X维 AllGather
         Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> primsX(
           tid, workNthreads, xPrevs, xNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
