@@ -54,6 +54,7 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
         // 建立Y维连接
         if (yPrev != rank) {
           NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &yPrev, 1, &yNext, 1), ret, fail);
+          NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &yNext, 1, &yPrev, 1), ret, fail);
         }
 
         // INFO(NCCL_INIT, "2D ring connections established for rank %d: X(%d,%d) Y(%d,%d)", 
