@@ -25,6 +25,7 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
       for (int c = 0; c < comm->nChannels; c++) {
         struct ncclChannel* channel = comm->channels + c;
         NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &channel->ring.prev, 1, &channel->ring.next, 0), ret, fail);
+        NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &channel->ring.next, 1, &channel->ring.prev, 0), ret, fail);
       }
       NCCLCHECKGOTO(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_RING], 0), ret, fail);
       
@@ -45,14 +46,14 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
         int yPrev = xRank + ((yRank - 1 + yDim) % yDim) * xDim;
         int yNext = xRank + ((yRank + 1) % yDim) * xDim;
         
-        // 建立X维连接
-        if (xPrev != rank) {
-          NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &xPrev, 1, &xNext, 1), ret, fail);
-        }
+        // // 建立X维连接
+        // if (xPrev != rank) {
+        //   NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &xPrev, 1, &xNext, 1), ret, fail);
+        // }
         
         // 建立Y维连接
         if (yPrev != rank) {
-          NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &yPrev, 1, &yNext, 2), ret, fail);
+          NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &yPrev, 1, &yNext, 1), ret, fail);
         }
 
         // INFO(NCCL_INIT, "2D ring connections established for rank %d: X(%d,%d) Y(%d,%d)", 
