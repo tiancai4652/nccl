@@ -194,6 +194,7 @@ namespace {
   __device__ __forceinline__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
     ncclRing *ring = &ncclShmem.channel.ring;
     const int *ringRanks = ring->userRanks;
+    int channelId = ncclShmem.channelId;  
     const int nranks = ncclShmem.comm.nRanks;
     const int rank = ncclShmem.comm.rank;
     ssize_t count, partOffset, partCount, chunkCount;
@@ -254,55 +255,57 @@ namespace {
     // {
     //   printf("For X BF");
     // }
+    if(channelId%2==0)
+    {
+      { // FOR X
+        if (tid < workNthreads) {
+          // Coverity reports that the callee treats &ring->next as an array.  However, due to the use of
+          // FanSymmetric<1>, only the first element is ever accessed, so it's fine.
+          // coverity[callee_ptr_arith:FALSE]
+          Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims
+            (tid, workNthreads, xPrevs, xNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
+          for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {
+            /////////////// begin AllGather steps ///////////////
+            nelem = min(chunkCount, partCount - elemOffset);
+            dataOffset = partOffset + elemOffset;
 
-    { // FOR X
-      if (tid < workNthreads) {
-        // Coverity reports that the callee treats &ring->next as an array.  However, due to the use of
-        // FanSymmetric<1>, only the first element is ever accessed, so it's fine.
-        // coverity[callee_ptr_arith:FALSE]
-        Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims
-          (tid, workNthreads, xPrevs, xNexts, inputBuf, outputBuf, work->redOpArg, 0, 0, 0, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
-        for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {
-          /////////////// begin AllGather steps ///////////////
-          nelem = min(chunkCount, partCount - elemOffset);
-          dataOffset = partOffset + elemOffset;
-
-          // step 0: push data to next GPU
-          rankDest = xRanks[0];
-          offset = dataOffset + rankDest * count;
-
-          if ((inputBuf + dataOffset == outputBuf + offset) || isNetOffload) { // In place or onePPN
-            prims.directSend(dataOffset, offset, nelem);
-          } else {
-            prims.directCopySend(dataOffset, offset, nelem);
-          }
-
-          // k-2 steps: copy to next GPU
-          for (int j = 1; j < xDim - 1; ++j) {
-            rankDest = xRanks[nranks - j];
+            // step 0: push data to next GPU
+            rankDest = xRanks[0];
             offset = dataOffset + rankDest * count;
-            prims.directRecvCopyDirectSend(offset, offset, nelem);
+
+            if ((inputBuf + dataOffset == outputBuf + offset) || isNetOffload) { // In place or onePPN
+              prims.directSend(dataOffset, offset, nelem);
+            } else {
+              prims.directCopySend(dataOffset, offset, nelem);
+            }
+
+            // k-2 steps: copy to next GPU
+            for (int j = 1; j < xDim - 1; ++j) {
+              rankDest = xRanks[nranks - j];
+              offset = dataOffset + rankDest * count;
+              prims.directRecvCopyDirectSend(offset, offset, nelem);
+            }
+
+            // Make final copy from buffer to dest.
+            rankDest = xRanks[1];
+            offset = dataOffset + rankDest * count;
+
+            // Final wait/copy.
+            prims.directRecv(offset, nelem);
           }
-
-          // Make final copy from buffer to dest.
-          rankDest = xRanks[1];
-          offset = dataOffset + rankDest * count;
-
-          // Final wait/copy.
-          prims.directRecv(offset, nelem);
+        } else if (inputBuf != outputBuf + xRanks[0] * count) {
+          inputBuf = inputBuf + partOffset;
+          outputBuf = outputBuf + partOffset + xRanks[0] * count;
+          reduceCopy<COLL_UNROLL, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs=*/0>
+            (tid - workNthreads, nthreads - workNthreads, work->redOpArg, &work->redOpArg, false, 1, (void**)&inputBuf, 1, (void**)&outputBuf, partCount);
         }
-      } else if (inputBuf != outputBuf + xRanks[0] * count) {
-        inputBuf = inputBuf + partOffset;
-        outputBuf = outputBuf + partOffset + xRanks[0] * count;
-        reduceCopy<COLL_UNROLL, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs=*/0>
-          (tid - workNthreads, nthreads - workNthreads, work->redOpArg, &work->redOpArg, false, 1, (void**)&inputBuf, 1, (void**)&outputBuf, partCount);
+      
+        // we have to wait for all warps before we can proceed to the next work;
+        // otherwise, we can have contention if next work will use the outputBuf
+        // in this work. We use bar 14 to avoid conflicts with prims barrier and
+        // __syncthread().
+        if (isNetOffload) barrier_sync(14, nthreads);
       }
-    
-      // we have to wait for all warps before we can proceed to the next work;
-      // otherwise, we can have contention if next work will use the outputBuf
-      // in this work. We use bar 14 to avoid conflicts with prims barrier and
-      // __syncthread().
-      if (isNetOffload) barrier_sync(14, nthreads);
     }
 
     
@@ -310,56 +313,60 @@ namespace {
     // {
     //   printf("For Y BF");
     // }
+    else
+    {
+      { // FOR Y
+        if (tid < workNthreads) {
+          // Coverity reports that the callee treats &ring->next as an array.  However, due to the use of
+          // FanSymmetric<1>, only the first element is ever accessed, so it's fine.
+          // coverity[callee_ptr_arith:FALSE]
+          Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims
+            (tid, workNthreads, yPrevs, yNexts, inputBuf, outputBuf, work->redOpArg, 0, 1, 1, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
+          for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {
+            /////////////// begin AllGather steps ///////////////
+            nelem = min(chunkCount, partCount - elemOffset);
+            dataOffset = partOffset + elemOffset;
 
-    { // FOR X 2
-      if (tid < workNthreads) {
-        // Coverity reports that the callee treats &ring->next as an array.  However, due to the use of
-        // FanSymmetric<1>, only the first element is ever accessed, so it's fine.
-        // coverity[callee_ptr_arith:FALSE]
-        Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0, isNetOffload> prims
-          (tid, workNthreads, yPrevs, yNexts, inputBuf, outputBuf, work->redOpArg, 0, 1, 1, work, NULL, isNetOffload ? NCCL_MAX_NET_SIZE : 0);
-        for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {
-          /////////////// begin AllGather steps ///////////////
-          nelem = min(chunkCount, partCount - elemOffset);
-          dataOffset = partOffset + elemOffset;
-
-          // step 0: push data to next GPU
-          rankDest = yRanks[0];
-          offset = dataOffset + rankDest * count;
-
-          if ((inputBuf + dataOffset == outputBuf + offset) || isNetOffload) { // In place or onePPN
-            prims.directSend(dataOffset, offset, nelem);
-          } else {
-            prims.directCopySend(dataOffset, offset, nelem);
-          }
-
-          // k-2 steps: copy to next GPU
-          for (int j = 1; j < yDim - 1; ++j) {
-            rankDest = yRanks[nranks - j];
+            // step 0: push data to next GPU
+            rankDest = yRanks[0];
             offset = dataOffset + rankDest * count;
-            prims.directRecvCopyDirectSend(offset, offset, nelem);
+
+            if ((inputBuf + dataOffset == outputBuf + offset) || isNetOffload) { // In place or onePPN
+              prims.directSend(dataOffset, offset, nelem);
+            } else {
+              prims.directCopySend(dataOffset, offset, nelem);
+            }
+
+            // k-2 steps: copy to next GPU
+            for (int j = 1; j < yDim - 1; ++j) {
+              rankDest = yRanks[nranks - j];
+              offset = dataOffset + rankDest * count;
+              prims.directRecvCopyDirectSend(offset, offset, nelem);
+            }
+
+            // Make final copy from buffer to dest.
+            rankDest = yRanks[1];
+            offset = dataOffset + rankDest * count;
+
+            // Final wait/copy.
+            prims.directRecv(offset, nelem);
           }
-
-          // Make final copy from buffer to dest.
-          rankDest = yRanks[1];
-          offset = dataOffset + rankDest * count;
-
-          // Final wait/copy.
-          prims.directRecv(offset, nelem);
+        } else if (inputBuf != outputBuf + yRanks[0] * count) {
+          inputBuf = inputBuf + partOffset;
+          outputBuf = outputBuf + partOffset + yRanks[0] * count;
+          reduceCopy<COLL_UNROLL, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs=*/0>
+            (tid - workNthreads, nthreads - workNthreads, work->redOpArg, &work->redOpArg, false, 1, (void**)&inputBuf, 1, (void**)&outputBuf, partCount);
         }
-      } else if (inputBuf != outputBuf + yRanks[0] * count) {
-        inputBuf = inputBuf + partOffset;
-        outputBuf = outputBuf + partOffset + yRanks[0] * count;
-        reduceCopy<COLL_UNROLL, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs=*/0>
-          (tid - workNthreads, nthreads - workNthreads, work->redOpArg, &work->redOpArg, false, 1, (void**)&inputBuf, 1, (void**)&outputBuf, partCount);
+      
+        // we have to wait for all warps before we can proceed to the next work;
+        // otherwise, we can have contention if next work will use the outputBuf
+        // in this work. We use bar 14 to avoid conflicts with prims barrier and
+        // __syncthread().
+        if (isNetOffload) barrier_sync(14, nthreads);
       }
-    
-      // we have to wait for all warps before we can proceed to the next work;
-      // otherwise, we can have contention if next work will use the outputBuf
-      // in this work. We use bar 14 to avoid conflicts with prims barrier and
-      // __syncthread().
-      if (isNetOffload) barrier_sync(14, nthreads);
+   
     }
+
   }
 }
 
