@@ -1,0 +1,6 @@
+make -C src build BUILDDIR=/home/zhangran/work/NCCL-SHARP/nccl/build
+make[1]: Entering directory '/home/zhangran/work/NCCL-SHARP/nccl/src'
+NVCC_GENCODE is -gencode=arch=compute_50,code=sm_50 -gencode=arch=compute_60,code=sm_60 -gencode=arch=compute_61,code=sm_61 -gencode=arch=compute_70,code=sm_70 -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_90,code=sm_90 -gencode=arch=compute_90,code=compute_90
+Compiling  proxy.cc                            > /home/zhangran/work/NCCL-SHARP/nccl/build/obj/proxy.o
+make[1]: *** [Makefile:115: /home/zhangran/work/NCCL-SHARP/nccl/build/obj/proxy.o] Interrupt
+make: *** [Makefile:25: src.build] Interrupt

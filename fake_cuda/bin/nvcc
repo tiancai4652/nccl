@@ -1,0 +1,99 @@
+#!/bin/bash
+# 虚拟NVCC编译器 - 用于CPU化NCCL编译
+
+# 解析参数
+ARGS=()
+OUTPUT=""
+SOURCES=()
+INCLUDES=()
+DEFINES=()
+CUDA_FLAGS=()
+COMPILING=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --version)
+            echo "nvcc: NVIDIA (R) Cuda compiler driver"
+            echo "Copyright (c) 2005-2023 NVIDIA Corporation"
+            echo "Built on Mon_Apr__3_17:16:06_PDT_2023"
+            echo "Cuda compilation tools, release 12.1, V12.1.105"
+            echo "Build cuda_12.1.r12.1/compiler.32688072_0"
+            exit 0
+            ;;
+        -o)
+            shift
+            OUTPUT="$1"
+            ;;
+        -c)
+            COMPILING=true
+            ;;
+        -I*)
+            INCLUDES+=("$1")
+            ;;
+        -D*)
+            DEFINES+=("$1")
+            ;;
+        -gencode*)
+            # 忽略GPU架构参数
+            ;;
+        --gpu-architecture=*)
+            # 忽略GPU架构参数
+            ;;
+        --gpu-code=*)
+            # 忽略GPU架构参数
+            ;;
+        -arch=*)
+            # 忽略GPU架构参数
+            ;;
+        -code=*)
+            # 忽略GPU架构参数
+            ;;
+        *.cu|*.cuh)
+            SOURCES+=("$1")
+            ;;
+        *)
+            ARGS+=("$1")
+            ;;
+    esac
+    shift
+done
+
+# 如果没有CUDA源文件，直接使用g++编译
+if [ ${#SOURCES[@]} -eq 0 ]; then
+    # 没有CUDA源文件，使用g++
+    exec g++ "${ARGS[@]}" "${INCLUDES[@]}" "${DEFINES[@]}"
+else
+    # 有CUDA源文件，但我们将其当作C++文件处理
+    echo "Warning: nvcc wrapper treating CUDA files as C++ files for CPU-only build"
+    
+    # 将.cu文件转换为.cpp文件进行编译
+    CPP_SOURCES=()
+    for src in "${SOURCES[@]}"; do
+        if [[ "$src" == *.cu ]]; then
+            # 创建一个临时的.cpp文件
+            cpp_src="${src%.cu}.cpp"
+            cp "$src" "$cpp_src"
+            CPP_SOURCES+=("$cpp_src")
+        else
+            CPP_SOURCES+=("$src")
+        fi
+    done
+    
+    if [ -n "$OUTPUT" ]; then
+        g++ -c "${INCLUDES[@]}" "${DEFINES[@]}" "${CPP_SOURCES[@]}" -o "$OUTPUT"
+    else
+        g++ "${INCLUDES[@]}" "${DEFINES[@]}" "${ARGS[@]}" "${CPP_SOURCES[@]}"
+    fi
+    
+    exit_code=$?
+    
+    # 清理临时文件
+    for src in "${SOURCES[@]}"; do
+        if [[ "$src" == *.cu ]]; then
+            cpp_src="${src%.cu}.cpp"
+            rm -f "$cpp_src"
+        fi
+    done
+    
+    exit $exit_code
+fi
